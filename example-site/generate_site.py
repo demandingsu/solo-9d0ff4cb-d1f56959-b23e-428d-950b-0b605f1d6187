@@ -8,6 +8,11 @@
   P5 只有原始招标公告              -> 有效，沿用原截止时间
   P6 公告未公布任何截止时间        -> 未公布
 列表页分两页，通过“下一页”链接串联，验证分页抓取。
+
+另生成两个补采演示用的静态失败场景目录：
+  backfill-dates/  含一条缺失发布日期的公告 -> 批次保持“未补齐（日期缺失）”
+  backfill-broken/ 末页含一个无项目编号的异常详情页 -> 该页整页不提交
+（“插入新公告 / 详情偶发 500”场景需要状态，由 serve.py 动态提供。）
 """
 from __future__ import annotations
 
@@ -170,15 +175,174 @@ def build_index() -> str:
 <body>
 <div class="wrap">
   <h1>示例采购信息平台</h1>
-  <p><a href="list/page_1.html">进入招标采购公告列表</a></p>
+  <p><a href="list/page_1.html">进入招标采购公告列表</a>（延期核对演示：6 个项目、11 条公告）</p>
+  <p>补采演示：</p>
+  <ul>
+    <li><a href="backfill">/backfill</a> —— 动态场景：两次操作之间目录首页插入新公告、详情页偶发 500；</li>
+    <li><a href="backfill-dates/list/page_1.html">/backfill-dates</a> —— 含缺失发布日期的公告；</li>
+    <li><a href="backfill-broken/list/page_1.html">/backfill-broken</a> —— 末页含无法解析的异常详情页。</li>
+  </ul>
 </div>
 </body>
 </html>
 """
 
 
-CSS = """
-body { margin:0; background:#f5f7fa; font-family:"PingFang SC","Microsoft YaHei",sans-serif; color:#1f2937; }
+# ---------- 补采演示用的静态失败场景目录 ----------
+# 每条公告：id（文件名）、项目编号、类型、发布时间（None 表示页面缺失该字段）、
+# 截止时间（None 表示未公布）、标题、正文、broken（True 生成无项目编号的异常页）
+EXTRA_CATALOGUES: dict[str, dict] = {
+    # 日期缺失：一条公告的详情页没有发布时间字段，批次无法确认区间已补齐
+    "backfill-dates": {
+        "page_size": 3,
+        "notices": [
+            {"id": "notice_d01", "project_no": "BF-2026-D01", "notice_type": "招标公告",
+             "publish_time": "2026-10-18 09:00:00", "deadline": "2026-11-06 10:00:00",
+             "title": "园区网络设备采购招标公告", "body": "欢迎符合条件的供应商参加投标。"},
+            {"id": "notice_d02", "project_no": "BF-2026-D02", "notice_type": "招标公告",
+             "publish_time": None, "deadline": "2026-11-08 10:00:00",
+             "title": "安防监控系统采购招标公告", "list_date": "日期待定",
+             "body": "本项目具体时间安排以招标文件为准，请投标人留意后续通知。"},
+        ],
+    },
+    # 解析失败：末页最后一条详情页缺少项目编号（模拟模板渲染异常），该页整页不提交
+    "backfill-broken": {
+        "page_size": 2,
+        "notices": [
+            {"id": "notice_x01", "project_no": "BF-2026-X01", "notice_type": "招标公告",
+             "publish_time": "2026-10-20 09:00:00", "deadline": "2026-11-10 10:00:00",
+             "title": "办公家具采购招标公告", "body": "欢迎合格供应商参与投标。"},
+            {"id": "notice_x02", "project_no": "BF-2026-X02", "notice_type": "招标公告",
+             "publish_time": "2026-10-19 09:00:00", "deadline": "2026-11-09 10:00:00",
+             "title": "印刷服务采购招标公告", "body": "本项目含设计、印制与配送。"},
+            {"id": "notice_x03", "project_no": "BF-2026-X03", "notice_type": "招标公告",
+             "publish_time": "2026-10-15 09:00:00", "deadline": "2026-11-05 10:00:00",
+             "title": "物业安保服务采购招标公告", "body": "服务期两年，详见招标文件。"},
+            {"id": "notice_x04", "project_no": "", "notice_type": "招标公告",
+             "publish_time": "2026-10-12 09:00:00", "deadline": None,
+             "title": "食堂耗材采购公告", "broken": True,
+             "body": "该公告内容暂缺，请稍后再试。"},
+        ],
+    },
+}
+
+
+def build_extra_detail(notice: dict) -> str:
+    title = html.escape(notice["title"])
+    if notice.get("broken"):
+        # 模拟模板渲染异常：页面没有任何项目编号字段，解析器应拒绝该页
+        return f"""<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>{title}</title>
+<link rel="stylesheet" href="../../assets/style.css">
+</head>
+<body>
+<div class="wrap">
+  <h1>{title}</h1>
+  <table class="fields">
+      <tr><th>公告类型</th><td>{html.escape(notice["notice_type"])}</td></tr>
+      <tr><th>发布时间</th><td>{notice["publish_time"]}</td></tr>
+  </table>
+  <div class="content">
+    <p>{html.escape(notice["body"])}</p>
+  </div>
+</div>
+</body>
+</html>
+"""
+    rows = []
+    if notice.get("publish_time"):
+        rows.append(("发布时间", notice["publish_time"]))
+    rows.append(("项目编号", notice["project_no"]))
+    rows.append(("公告类型", notice["notice_type"]))
+    if notice.get("deadline"):
+        rows.append(("投标截止时间", notice["deadline"]))
+    table = "\n      ".join(
+        f"<tr><th>{label}</th><td>{html.escape(str(value))}</td></tr>" for label, value in rows
+    )
+    return f"""<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>{title}</title>
+<link rel="stylesheet" href="../../assets/style.css">
+</head>
+<body>
+<div class="wrap">
+  <h1>{title}</h1>
+  <table class="fields">
+      {table}
+  </table>
+  <div class="content">
+    <p>{html.escape(notice["body"])}</p>
+  </div>
+</div>
+</body>
+</html>
+"""
+
+
+def build_extra_list_page(page_no: int, page_items: list[dict], has_next: bool) -> str:
+    items_html = []
+    for notice in page_items:
+        list_date = notice.get("list_date") or notice.get("publish_time") or "日期待定"
+        items_html.append(
+            f'    <li><a class="notice-link" href="../detail/{notice["id"]}.html">'
+            f'<span class="t">{html.escape(notice["title"])}</span>'
+            f'<span class="d">{list_date}</span></a></li>'
+        )
+    pager = (
+        '<div class="pager">'
+        f'<a class="next-page" href="page_{page_no + 1}.html">下一页</a>'
+        "</div>"
+        if has_next
+        else '<div class="pager"><span class="disabled">下一页</span></div>'
+    )
+    return f"""<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>补采演示目录 - 第{page_no}页</title>
+<link rel="stylesheet" href="../../assets/style.css">
+</head>
+<body>
+<div class="wrap">
+  <h1>补采演示目录</h1>
+  <ul class="notice-list">
+{chr(10).join(items_html)}
+  </ul>
+{pager}
+</div>
+</body>
+</html>
+"""
+
+
+def build_extra_catalogues() -> int:
+    total = 0
+    for name, spec in EXTRA_CATALOGUES.items():
+        base = OUTPUT / name
+        (base / "list").mkdir(parents=True, exist_ok=True)
+        (base / "detail").mkdir(parents=True, exist_ok=True)
+        # 按发布时间倒序；无时间的排最后
+        notices = sorted(spec["notices"], key=lambda n: n.get("publish_time") or "0000", reverse=True)
+        size = spec["page_size"]
+        pages = [notices[i:i + size] for i in range(0, len(notices), size)]
+        for page_no, items in enumerate(pages, start=1):
+            (base / "list" / f"page_{page_no}.html").write_text(
+                build_extra_list_page(page_no, items, page_no < len(pages)), encoding="utf-8"
+            )
+        for notice in notices:
+            (base / "detail" / f"{notice['id']}.html").write_text(
+                build_extra_detail(notice), encoding="utf-8"
+            )
+        total += len(notices)
+    return total
+
+
+CSS = """body { margin:0; background:#f5f7fa; font-family:"PingFang SC","Microsoft YaHei",sans-serif; color:#1f2937; }
 .wrap { max-width:960px; margin:24px auto; background:#fff; padding:28px 36px; border-radius:10px; box-shadow:0 1px 4px rgba(0,0,0,.08); }
 h1 { font-size:20px; margin:0 0 18px; }
 .crumb a { color:#1d4ed8; text-decoration:none; font-size:13px; }
@@ -223,7 +387,9 @@ def main() -> None:
 
     (OUTPUT / "index.html").write_text(build_index(), encoding="utf-8")
     (OUTPUT / "assets" / "style.css").write_text(CSS, encoding="utf-8")
-    print(f"示例站点已生成：{OUTPUT}（{len(NOTICES)} 条公告，{len(pages)} 个列表页）")
+    extra = build_extra_catalogues()
+    print(f"示例站点已生成：{OUTPUT}（{len(NOTICES)} 条公告，{len(pages)} 个列表页；"
+          f"补采演示目录 {len(EXTRA_CATALOGUES)} 个、{extra} 条公告）")
 
 
 if __name__ == "__main__":

@@ -4,6 +4,9 @@
 沿同站点“下一页”自动抓取详情页，按字段标签读取项目编号、公告类型、发布时间、投标截止时间，
 按**项目编号归并**、按**发布时间先后**处理，并在浏览器展示每个项目的当前结果与全部公告链接。
 
+另提供**按日期区间补采**入口：上次抓到一半中断、或两次操作之间目录首页插入新公告时，
+输入目录地址与发布日期区间即可建立补采批次，记录与进度存入 SQLite，可随时在浏览器续采。
+
 ## 处理规则
 
 | 情形 | 处理结果 |
@@ -15,28 +18,56 @@
 
 同一项目的全部公告（原公告、更正、延期）按发布时间升序保留，并附原文链接，便于回溯核对。
 
+## 按日期区间补采
+
+入口：网页顶部导航“补采批次”，或直接访问 <http://localhost:8000/backfill>。
+
+**使用方式**：录入目录首页地址与发布日期区间（YYYY-MM-DD），点击“开始补采”。
+相同目录+区间会并入同一批次；批次列表与批次详情页都有“继续采集”按钮。
+
+**采集语义**：
+
+- 每次运行（含续采）都**从目录首页重走分页**，沿同站“下一页”逐页采集详情——
+  不按旧页码跳过：两次操作之间目录可能插入新公告，旧条目会后移；
+- 公告以**详情页 URL** 识别：已采过的公告无论现在第几页都跳过，不重复抓取、不重复入库；
+- **按页原子提交**：一页之内只要有详情抓取或解析失败，该页的记录与进度都不提交，
+  但此前已成功提交的页面保留；
+- 只有**从首页完整采到目录末页**，批次才标记为“已补齐”；
+- 分页失败、公告发布日期缺失、或触及采集上限时，批次保持“未补齐”并展示原因，
+  已成功的页面与记录保留，可随时续采；
+- 批次详情页展示：状态与未补齐原因、已提交的列表页进度、区间内的公告及其来源列表页，
+  也可切换查看全部已采记录（含区间外）。
+
+**持久化**：批次、页进度、公告记录都保存在 SQLite（表：`batches` / `pages` / `announcements`），
+Docker Compose 中落在命名卷 `backfill-data` 上，容器重建后数据仍在；
+本地直接运行时默认写到 `data/backfill.db`（可用环境变量 `BACKFILL_DB_PATH` 覆盖）。
+
 ## 目录结构
 
 ```
 .
-├── docker-compose.yml          # 一键启动网页 + 同结构本地示例站点
+├── docker-compose.yml          # 一键启动网页 + 示例站点；命名卷持久化 SQLite
 ├── webapp/                     # FastAPI 服务端渲染应用（Jinja2 模板）
 │   ├── Dockerfile
 │   ├── requirements.txt
 │   └── app/
-│       ├── main.py             # 路由：录入、结果页、页面代理
+│       ├── main.py             # 路由：核对、补采批次、页面代理
 │       ├── crawler.py          # 列表页/下一页/详情页抓取（仅同站点）
+│       ├── backfill.py         # 补采运行：从首页重走分页、按页原子提交、补齐判定
+│       ├── storage.py          # SQLite：批次、页进度、公告记录
 │       ├── parser.py           # 按字段标签解析详情（表格/dl/label/正文兜底）
 │       ├── merger.py           # 按项目编号归并、按发布时间处理截止时间
 │       ├── models.py
 │       ├── utils.py
-│       └── templates/index.html
-├── example-site/               # 同结构本地示例站点（静态 HTML + nginx）
-│   ├── Dockerfile              # 构建时运行 generate_site.py 生成页面
-│   ├── nginx.conf
-│   ├── generate_site.py        # 6 个项目、11 条公告、2 个列表页的场景数据
+│       └── templates/          # index.html / backfill.html / backfill_detail.html
+├── example-site/               # 同结构本地示例站点
+│   ├── Dockerfile              # 构建时生成静态站点，运行时 python serve.py
+│   ├── serve.py                # 静态文件 + /backfill/ 动态演示（插入新公告、详情偶发 500）
+│   ├── generate_site.py        # 静态页面生成：11 条公告 + 失败场景目录
 │   └── site/                   # 生成产物（可重新生成）
-└── tests/test_end_to_end.py    # 端到端测试（抓取 → 解析 → 归并 → 状态断言）
+└── tests/
+    ├── test_end_to_end.py      # 核对链路：抓取 → 解析 → 归并 → 状态断言
+    └── test_backfill.py        # 补采链路：续采、插入、失败、上限、区间过滤
 ```
 
 ## 用 Docker Compose 启动
@@ -45,7 +76,7 @@
 docker compose up --build
 ```
 
-- 网页应用：<http://localhost:8000>
+- 网页应用：<http://localhost:8000>（补采入口：<http://localhost:8000/backfill>）
 - 示例站点（宿主机直连）：<http://localhost:8080>
 
 在网页输入框中填入示例站点的列表页地址（容器内服务名地址，网页后端可直接抓取）：
@@ -54,16 +85,27 @@ docker compose up --build
 http://example-site/list/page_1.html
 ```
 
-点击“开始核对”后，页面展示：
+补采演示目录（同样填容器内地址）：
 
-1. 抓取概况：遍历的列表页（即“下一页”路径）、公告数、跳过链接、错误信息；
-2. 各项目当前核对结果：项目编号、名称、状态徽章、**当前**投标截止时间；
-3. 每个项目可展开的公告历史：公告类型、是否声明延期、发布时间、原文截止时间及链接。
+| 目录地址 | 演示场景 |
+| --- | --- |
+| `http://example-site/backfill/list/page_1.html` | 详情页偶发 500（首次必现一次）；在示例站 `/backfill` 页点“插入新公告”后，首页多出 2 条新公告、旧条目后移 |
+| `http://example-site/backfill-dates/list/page_1.html` | 一条公告缺失发布日期 → 批次保持“未补齐（日期缺失）” |
+| `http://example-site/backfill-broken/list/page_1.html` | 末页一条详情页无项目编号 → 该页整页不提交，批次“未补齐（解析失败）” |
+
+演示动线建议：
+
+1. 在 `/backfill` 用 `http://example-site/backfill/list/page_1.html`、区间 `2026-10-01 ~ 2026-11-30`
+   创建批次 → 首次运行因详情 500 停在末页，状态“未补齐”，第 1 页记录已保留；
+2. 点“继续采集” → 从首页重走分页，已采的 3 条跳过，补采末页 → “已补齐”；
+3. 打开示例站 <http://localhost:8080/backfill> 点“插入新公告”（或访问 `/backfill/_advance`）；
+4. 回到批次再点“继续采集” → 新插入的 2 条被拾取，后移的旧公告不重复；
+5. 把区间改成 `2026-10-01 ~ 2026-10-31` 再建一个批次 → 11 月的两条显示为“不在区间内”。
 
 > 公告链接默认指向容器内网地址（如 `http://example-site/...`），宿主机浏览器无法直接打开，
 > 因此页面链接统一经过网页后端的 `/view` 代理打开；示例站点本身也映射在 8080 端口可直接浏览。
 
-## 示例站点覆盖的场景
+## 示例站点覆盖的核对场景
 
 | 项目编号 | 场景 | 预期结果 |
 | --- | --- | --- |
@@ -90,7 +132,7 @@ http://example-site/list/page_1.html
 
 - 仅跟随与入口**同站点**（协议+主机+端口一致）的“下一页”和详情链接，跨站链接跳过并记录；
 - 只允许 `http(s)`，拒绝 `file://` 等协议；
-- 上限：列表页 10 个、详情页 100 个、单请求超时 15 秒；
+- 上限：单次运行列表页 10 个、新抓详情页 100 个、单请求超时 15 秒；
 - `/view`、`/asset` 代理同样只转发 `http(s)` 目标。
 
 ## 本地测试（无需 Docker）
@@ -99,4 +141,5 @@ http://example-site/list/page_1.html
 pip install -r webapp/requirements.txt
 python example-site/generate_site.py
 python -I tests/test_end_to_end.py
+python -I tests/test_backfill.py
 ```

@@ -3,6 +3,11 @@ services:
     build: ./webapp
     ports:
       - "8000:8000"
+    environment:
+      # SQLite 数据库落在命名卷上，容器重建后批次与进度仍在
+      BACKFILL_DB_PATH: /data/backfill.db
+    volumes:
+      - backfill-data:/data
     depends_on:
       - example-site
     restart: unless-stopped
@@ -12,3 +17,6 @@ services:
     ports:
       - "8080:80"
     restart: unless-stopped
+
+volumes:
+  backfill-data:

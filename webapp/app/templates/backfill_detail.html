@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>批次 #{{ batch.id }} - 招标公告补采</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
+         background: #f0f2f5; color: #1f2937; }
+  header { background: #1d4ed8; color: #fff; padding: 20px 32px; }
+  header h1 { margin: 0 0 6px; font-size: 22px; }
+  header p { margin: 0; font-size: 13px; opacity: .85; word-break: break-all; }
+  header nav { margin-top: 10px; font-size: 13px; }
+  header nav a { color: #dbeafe; text-decoration: none; margin-right: 16px; }
+  header nav a:hover { text-decoration: underline; }
+  main { max-width: 1180px; margin: 24px auto; padding: 0 20px; }
+  .card { background: #fff; border-radius: 10px; padding: 20px 24px; margin-bottom: 20px;
+          box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { border: 1px solid #e2e8f0; padding: 9px 10px; text-align: left; vertical-align: top; }
+  th { background: #f8fafc; white-space: nowrap; }
+  td.url { word-break: break-all; }
+  .badge { display: inline-block; padding: 3px 10px; border-radius: 999px; font-size: 12px;
+           font-weight: 600; white-space: nowrap; }
+  .badge-ok { background: #dcfce7; color: #166534; }
+  .badge-bad { background: #fee2e2; color: #991b1b; }
+  .tag { display: inline-block; background: #eef2ff; color: #3730a3; border-radius: 4px;
+         padding: 1px 7px; font-size: 11px; margin-right: 6px; }
+  .tag-ext { background: #fef3c7; color: #92400e; }
+  .note { color: #64748b; font-size: 12px; margin-top: 4px; }
+  .meta-row { display: flex; gap: 16px; flex-wrap: wrap; font-size: 13px; color: #475569; margin: 12px 0; }
+  .meta-row span { background: #f8fafc; border: 1px solid #e2e8f0; padding: 4px 10px; border-radius: 999px; }
+  .banner { border-radius: 8px; padding: 12px 16px; font-size: 13px; margin-bottom: 14px; }
+  .banner-ok { background: #f0fdf4; border: 1px solid #bbf7d0; color: #166534; }
+  .banner-bad { background: #fef2f2; border: 1px solid #fecaca; color: #991b1b; }
+  .warn { background: #fffbeb; border: 1px solid #fde68a; color: #92400e; border-radius: 8px;
+          padding: 12px 16px; font-size: 13px; margin-bottom: 14px; }
+  button { padding: 10px 22px; background: #1d4ed8; color: #fff; border: none;
+           border-radius: 8px; font-size: 13px; cursor: pointer; }
+  button:hover { background: #1e40af; }
+  form.inline { display: inline; }
+  .empty { text-align: center; color: #64748b; padding: 32px; font-size: 14px; }
+  h2 { font-size: 16px; margin: 0 0 14px; }
+  a { color: #1d4ed8; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  .toolbar { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>补采批次 #{{ batch.id }}</h1>
+  <p>{{ batch.entry_url }} ｜ 发布日期 {{ batch.date_from }} ~ {{ batch.date_to }}</p>
+  <nav>
+    <a href="/">← 延期核对</a>
+    <a href="/backfill">补采批次</a>
+  </nav>
+</header>
+<main>
+  <div class="card">
+    <h2>批次状态</h2>
+    {% if batch.status == 'completed' %}
+    <div class="banner banner-ok">
+      <strong>已补齐</strong>：已从目录首页完整采到目录末页，区间内公告均已采集。
+    </div>
+    {% else %}
+    <div class="banner banner-bad">
+      <strong>未补齐</strong>{% if batch.incomplete_reason %}：{{ batch.incomplete_reason }}{% endif %}
+      <div class="note">已成功的页面已保留，可点击“继续采集”从目录首页重走分页续采。</div>
+    </div>
+    {% endif %}
+    <div class="meta-row">
+      <span>运行次数：{{ batch.run_count }}</span>
+      <span>最近运行：{{ batch.last_run_at or '—' }}</span>
+      <span>创建时间：{{ batch.created_at }}</span>
+      <span>已提交列表页：{{ pages|length }}</span>
+      <span>已采记录：{{ announcements|length }}{% if not show_all %}（区间内）{% endif %}</span>
+    </div>
+    <div class="toolbar">
+      <form class="inline" method="post" action="/backfill/{{ batch.id }}/run">
+        <button type="submit">继续采集（从首页重走分页）</button>
+      </form>
+    </div>
+    {% if date_missing %}
+    <div class="warn">
+      <strong>日期缺失：</strong>{{ date_missing|length }} 条公告无法解析发布日期，无法确认其是否属于该区间：
+      <ul style="margin:6px 0 0; padding-left:20px;">
+        {% for url in date_missing %}
+        <li><a href="/view?url={{ url|urlencode }}" target="_blank">{{ url }}</a></li>
+        {% endfor %}
+      </ul>
+    </div>
+    {% endif %}
+  </div>
+
+  <div class="card">
+    <h2>已提交的列表页（进度）</h2>
+    {% if pages %}
+    <table>
+      <thead>
+        <tr><th>页序</th><th>列表页</th><th>发现详情</th><th>最近提交新增</th><th>提交时间</th></tr>
+      </thead>
+      <tbody>
+        {% for p in pages %}
+        <tr>
+          <td>{{ p.page_index }}</td>
+          <td class="url"><a href="/view?url={{ p.page_url|urlencode }}" target="_blank">{{ p.page_url }}</a></td>
+          <td>{{ p.detail_found }} 条</td>
+          <td>{{ p.new_records }} 条</td>
+          <td style="white-space:nowrap;">{{ p.committed_at }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <div class="empty">尚无已提交的列表页。</div>
+    {% endif %}
+  </div>
+
+  <div class="card">
+    <h2>{% if show_all %}全部已采公告{% else %}区间内公告（{{ batch.date_from }} ~ {{ batch.date_to }}）{% endif %}</h2>
+    <div class="toolbar">
+      {% if show_all %}
+      <a href="/backfill/{{ batch.id }}">只看区间内</a>
+      {% else %}
+      <a href="/backfill/{{ batch.id }}?all=1">查看全部已采记录</a>
+      {% endif %}
+    </div>
+    {% if announcements %}
+    <table>
+      <thead>
+        <tr>
+          <th>项目编号</th><th>标题</th><th>类型</th><th>发布时间</th>
+          <th>投标截止时间</th><th>来源列表页</th><th>采集时间</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for ann in announcements %}
+        <tr>
+          <td style="white-space:nowrap;font-weight:600;">{{ ann.project_no }}</td>
+          <td>
+            <a href="/view?url={{ ann.url|urlencode }}" target="_blank">{{ ann.title or ann.url }}</a>
+            {% if not ann.date_ok %}<div class="note" style="color:#b45309;">发布日期缺失</div>{% endif %}
+            {% if ann.date_ok and not ann.in_range %}<div class="note">不在区间内</div>{% endif %}
+          </td>
+          <td style="white-space:nowrap;">
+            {% if ann.notice_type %}<span class="tag">{{ ann.notice_type }}</span>{% endif %}
+            {% if ann.declares_extension %}<span class="tag tag-ext">声明延期</span>{% endif %}
+          </td>
+          <td style="white-space:nowrap;">{{ ann.publish_time or '未识别' }}</td>
+          <td style="white-space:nowrap;">{{ ann.deadline or '未写明' }}</td>
+          <td class="url"><a href="/view?url={{ ann.list_page_url|urlencode }}" target="_blank">{{ ann.list_page_url }}</a></td>
+          <td style="white-space:nowrap;">{{ ann.fetched_at }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <div class="empty">暂无{% if not show_all %}区间内{% endif %}公告记录。</div>
+    {% endif %}
+  </div>
+</main>
+</body>
+</html>
